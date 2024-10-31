@@ -13,11 +13,11 @@ URL: https://www.python.org/
 
 #  WARNING  When rebasing to a new Python version,
 #           remember to update the python3-docs package as well
-%global general_version %{pybasever}.16
+%global general_version %{pybasever}.20
 #global prerel ...
 %global upstream_version %{general_version}%{?prerel}
 Version: %{general_version}%{?prerel:~%{prerel}}
-Release: 1%{?dist}.2
+Release: 1%{?dist}
 License: Python
 
 # Exclude i686 arch. Due to a modularity issue it's being added to the
@@ -182,6 +182,13 @@ ExcludeArch: i686
 %global py_INSTSONAME_optimized libpython%{LDVERSION_optimized}.so.%{py_SOVERSION}
 %global py_INSTSONAME_debug     libpython%{LDVERSION_debug}.so.%{py_SOVERSION}
 
+# The -O flag for the compiler, optimized builds
+# https://fedoraproject.org/wiki/Changes/Python_built_with_gcc_O3
+%global optflags_optimized -O3
+# The -O flag for the compiler, debug builds
+# -Wno-cpp avoids some warnings with -O0
+%global optflags_debug -O0 -Wno-cpp
+
 # Disable automatic bytecompilation. The python3 binary is not yet be
 # available in /usr/bin when Python is built. Also, the bytecompilation fails
 # on files that test invalid syntax.
@@ -319,8 +326,8 @@ Patch189: 00189-use-rpm-wheels.patch
 # The versions are written in Lib/ensurepip/__init__.py, this patch removes them.
 # When the bundled setuptools/pip wheel is updated, the patch no longer applies cleanly.
 # In such cases, the patch needs to be amended and the versions updated here:
-%global pip_version 21.2.3
-%global setuptools_version 57.4.0
+%global pip_version 23.0.1
+%global setuptools_version 58.1.0
 
 # 00251 # 2eabd04356402d488060bc8fe316ad13fc8a3356
 # Change user install location
@@ -415,27 +422,42 @@ Patch353: 00353-architecture-names-upstream-downstream.patch
 # Upstream: https://bugs.python.org/issue46811
 Patch378: 00378-support-expat-2-4-5.patch
 
-# 00399 # c32eff86eb80f6a6bdcbf4b1b6535fbc627b51a2
-# CVE-2023-24329
-#
-# * gh-102153: Start stripping C0 control and space chars in `urlsplit` (GH-102508)
-#
-# `urllib.parse.urlsplit` has already been respecting the WHATWG spec a bit GH-25595.
-#
-# This adds more sanitizing to respect the "Remove any leading C0 control or space from input" [rule](https://url.spec.whatwg.org/GH-url-parsing:~:text=Remove%%20any%%20leading%%20and%%20trailing%%20C0%%20control%%20or%%20space%%20from%%20input.) in response to [CVE-2023-24329](https://nvd.nist.gov/vuln/detail/CVE-2023-24329).
-#
-# ---------
-Patch399: 00399-cve-2023-24329.patch
+# 00397 #
+# Add filters for tarfile extraction (CVE-2007-4559, PEP-706)
+# First patch fixes determination of symlink targets, which were treated
+# as relative to the root of the archive,
+# rather than the directory containing the symlink.
+# Not yet upstream as of this writing.
+# The second patch is Red Hat configuration, see KB for documentation:
+# - https://access.redhat.com/articles/7004769
+Patch397: 00397-tarfile-filter.patch
 
-# 00404 #
-# CVE-2023-40217
+# 00414 #
 #
-# Security fix for CVE-2023-40217: Bypass TLS handshake on closed sockets
-# Resolved upstream: https://github.com/python/cpython/issues/108310
-# Fixups added on top from:
-# https://github.com/python/cpython/issues/108342
+# Skip test_pair() and test_speech128() of test_zlib on s390x since
+# they fail if zlib uses the s390x hardware accelerator.
+Patch414: 00414-skip_test_zlib_s390x.patch
+
+# 00415 #
+# [CVE-2023-27043] gh-102988: Reject malformed addresses in email.parseaddr() (#111116)
 #
-Patch404: 00404-cve-2023-40217.patch
+# Detect email address parsing errors and return empty tuple to
+# indicate the parsing error (old API). Add an optional 'strict'
+# parameter to getaddresses() and parseaddr() functions. Patch by
+# Thomas Dwyer.
+#
+# Upstream PR: https://github.com/python/cpython/pull/111116
+#
+# This patch implements the possibility to restore the old behavior via
+# config file or environment variable.
+Patch415: 00415-cve-2023-27043-gh-102988-reject-malformed-addresses-in-email-parseaddr-111116.patch
+
+# 00422 # a353cebef737c41420dc7ae2469dd657371b8881
+# Fix tests for XMLPullParser with Expat 2.6.0
+#
+# Feeding the parser by too small chunks defers parsing to prevent
+# CVE-2023-52425. Future versions of Expat may be more reactive.
+Patch422: 00422-fix-tests-for-xmlpullparser-with-expat-2-6-0.patch
 
 # (New patches go here ^^^)
 #
@@ -848,8 +870,10 @@ rm Lib/ensurepip/_bundled/*.whl
 %apply_patch -q %{PATCH329}
 %apply_patch -q %{PATCH353}
 %apply_patch -q %{PATCH378}
-%apply_patch -q %{PATCH399}
-%apply_patch -q %{PATCH404}
+%apply_patch -q %{PATCH397}
+%apply_patch -q %{PATCH414}
+%apply_patch -q %{PATCH415}
+%apply_patch -q %{PATCH422}
 
 # Remove all exe files to ensure we are not shipping prebuilt binaries
 # note that those are only used to create Microsoft Windows installers
@@ -926,6 +950,7 @@ BuildPython() {
   ConfName=$1
   ExtraConfigArgs=$2
   MoreCFlags=$3
+  MoreCFlagsNodist=$4
 
   # Each build is done in its own directory
   ConfDir=build/$ConfName
@@ -960,7 +985,7 @@ BuildPython() {
   $ExtraConfigArgs \
   %{nil}
 
-%global flags_override EXTRA_CFLAGS="$MoreCFlags" CFLAGS_NODIST="$CFLAGS_NODIST $MoreCFlags"
+%global flags_override EXTRA_CFLAGS="$MoreCFlags" CFLAGS_NODIST="$CFLAGS_NODIST $MoreCFlags $MoreCFlagsNodist"
 
 %if %{without bootstrap}
   # Regenerate generated files (needs python3)
@@ -983,12 +1008,14 @@ BuildPython() {
 # See also: https://bugzilla.redhat.com/show_bug.cgi?id=1818857
 BuildPython debug \
   "--without-ensurepip --with-pydebug" \
-  "-O0 -Wno-cpp"
+  "%{optflags_debug}" \
+  ""
 %endif # with debug_build
 
 BuildPython optimized \
   "--without-ensurepip %{optimizations_flag}" \
-  ""
+  "" \
+  "%{optflags_optimized}"
 
 # ======================================================
 # Installing the built code:
@@ -1087,7 +1114,7 @@ EOF
 %if %{with debug_build}
 InstallPython debug \
   %{py_INSTSONAME_debug} \
-  -O0 \
+  "%{optflags_debug}" \
   %{LDVERSION_debug}
 %endif # with debug_build
 
@@ -1287,6 +1314,11 @@ touch %{buildroot}%{_bindir}/python3-config
 touch %{buildroot}%{_bindir}/python3-debug
 touch %{buildroot}%{_bindir}/python3-debug-config
 
+# Strip the LTO bytecode from python.o
+# Based on the fedora brp-strip-lto scriptlet
+# https://src.fedoraproject.org/rpms/redhat-rpm-config/blob/9dd5528cf9805ebfe31cff04fe7828ad06a6023f/f/brp-strip-lto
+find %{buildroot} -type f -name 'python.o' -print0 | xargs -0 \
+bash -c "strip -p -R .gnu.lto_* -R .gnu.debuglto_* -N __gnu_lto_v1 \"\$@\"" ARG0
 
 # ======================================================
 # Checks for packaging issues
@@ -2016,13 +2048,68 @@ fi
 # ======================================================
 
 %changelog
-* Wed Sep 20 2023 Charalampos Stratakis <cstratak@redhat.com> - 3.9.16-1.2
-- Security fix for CVE-2023-40217
-Resolves: RHEL-3237
+* Mon Sep 09 2024 Tomáš Hrnčiar <thrnciar@redhat.com> - 3.9.20-1
+- Update to 3.9.20
+Resolves: RHEL-60007
 
-* Mon May 29 2023 Charalampos Stratakis <cstratak@redhat.com> - 3.9.16-1.1
+* Fri Aug 23 2024 Charalampos Stratakis <cstratak@redhat.com> - 3.9.19-7
+- Security fix for CVE-2024-8088
+Resolves: RHEL-55954
+
+* Tue Aug 13 2024 Lumír Balhar <lbalhar@redhat.com> - 3.9.19-6
+- Security fix for CVE-2024-6923
+Resolves: RHEL-53102
+
+* Thu Jul 25 2024 Charalampos Stratakis <cstratak@redhat.com> - 3.9.19-5
+- Properly propagate the optimization flags to C extensions
+
+* Thu Jul 18 2024 Charalampos Stratakis <cstratak@redhat.com> - 3.9.19-4
+- Build Python with -O3
+- https://fedoraproject.org/wiki/Changes/Python_built_with_gcc_O3
+
+* Thu Jul 18 2024 Charalampos Stratakis <cstratak@redhat.com> - 3.9.19-3
+- Security fix for CVE-2024-4032
+Resolves: RHEL-44094
+
+* Tue Jun 11 2024 Charalampos Stratakis <cstratak@redhat.com> - 3.9.19-2
+- Enable importing of hash-based .pyc files under FIPS mode
+Resolves: RHEL-40786
+
+* Mon Apr 22 2024 Charalampos Stratakis <cstratak@redhat.com> - 3.9.19-1
+- Update to 3.9.19
+- Security fixes for CVE-2023-6597 and CVE-2024-0450
+- Fix tests for XMLPullParser with Expat with fixed CVE
+Resolves: RHEL-33676, RHEL-33688
+
+* Wed Jan 17 2024 Lumír Balhar <lbalhar@redhat.com> - 3.9.18-3
+- Skip tests failing on s390x
+Resolves: RHEL-21905
+
+* Tue Jan 16 2024 Lumír Balhar <lbalhar@redhat.com> - 3.9.18-2
+- Security fix for CVE-2023-27043
+Resolves: RHEL-5561
+
+* Thu Sep 07 2023 Charalampos Stratakis <cstratak@redhat.com> - 3.9.18-1
+- Update to 3.9.18
+- Security fix for CVE-2023-40217
+Resolves: RHEL-3238
+
+* Wed Aug 09 2023 Petr Viktorin <pviktori@redhat.com> - 3.9.17-2
+- Fix symlink handling in the fix for CVE-2023-24329
+Resolves: rhbz#263261
+
+* Mon Jul 17 2023 Charalampos Stratakis <cstratak@redhat.com> - 3.9.17-1
+- Rebase to 3.9.17
 - Security fix for CVE-2023-24329
 Resolves: rhbz#2173917
+
+* Wed Jul 12 2023 Charalampos Stratakis <cstratak@redhat.com> - 3.9.16-3
+- Strip the LTO bytecode from python.o
+Resolves: rhbz#2213527
+
+* Mon Jun 19 2023 Petr Viktorin <pviktori@redhat.com> - 3.9.16-2
+- Add filters for tarfile extraction (CVE-2007-4559, PEP-706)
+Resolves: rhbz#263261
 
 * Tue Dec 13 2022 Charalampos Stratakis <cstratak@redhat.com> - 3.9.16-1
 - Update to 3.9.16
